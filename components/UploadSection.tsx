@@ -3,7 +3,6 @@
 import { useCallback, useRef, useState } from "react";
 import {
   AlertTriangle,
-  ChevronDown,
   FileSpreadsheet,
   RefreshCw,
   Trash2,
@@ -23,9 +22,9 @@ const BROKER_GUIDES = [
     id: "tiger",
     name: "老虎国际",
     steps: [
-      "打开老虎国际 App 或网页平台",
-      "持仓 → 更多 → 账单报表 (网页: 报表 → 账单)",
-      "选择日期范围: 交易明细 CSV 或「税表」xlsx",
+      "需使用老虎桌面版或网页版 (手机 App 仅支持 PDF)",
+      "账户 → 账单报表 (网页: 报表 → 账单)",
+      "选择日期范围, 导出「交易明细」CSV 或「税表」xlsx",
     ],
   },
   {
@@ -54,7 +53,6 @@ export function UploadSection({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [openGuide, setOpenGuide] = useState<string | null>("futu");
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -204,27 +202,17 @@ export function UploadSection({
       <div className="mt-6 grid gap-3 md:grid-cols-3">
         {BROKER_GUIDES.map((b) => (
           <div key={b.id} className="glass-card p-4">
-            <button
-              onClick={() => setOpenGuide(openGuide === b.id ? null : b.id)}
-              className="flex w-full items-center justify-between text-sm font-medium"
-            >
-              {b.name}
-              <ChevronDown
-                className={cn("h-4 w-4 text-muted-foreground transition", openGuide === b.id && "rotate-180")}
-              />
-            </button>
-            {openGuide === b.id && (
-              <ol className="mt-3 space-y-1.5">
-                {b.steps.map((step, i) => (
-                  <li key={i} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
-                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-cyan-400/15 font-mono text-[10px] text-cyan-300">
-                      {i + 1}
-                    </span>
-                    {step}
-                  </li>
-                ))}
-              </ol>
-            )}
+            <p className="text-sm font-medium">{b.name}</p>
+            <ol className="mt-3 space-y-1.5">
+              {b.steps.map((step, i) => (
+                <li key={i} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-cyan-400/15 font-mono text-[10px] text-cyan-300">
+                    {i + 1}
+                  </span>
+                  {step}
+                </li>
+              ))}
+            </ol>
           </div>
         ))}
       </div>
