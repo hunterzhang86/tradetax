@@ -39,27 +39,15 @@ export function PrivacySection() {
             </p>
           </div>
 
-          <div className="mb-8 overflow-hidden rounded-xl border border-white/[0.08] bg-black/40 p-4">
-            <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed text-cyan-200/80 md:text-xs">
-{`浏览器 (你的设备)
-┌─────────────────────────────────────────────┐
-│  CSV / XLSX 账单文件                          │
-│      │  FileReader (ArrayBuffer)             │
-│      ▼                                       │
-│  [解析器] 富途 · 老虎 · 长桥 → 归一化模型      │
-│      │                                       │
-│      ▼                                       │
-│  [计算引擎] FIFO / HIFO · 三税种 · 汇率折算     │
-│      │                                       │
-│      ▼                                       │
-│  [报告] 汇总 · 明细 · CSV 导出 (本地下载)      │
-│                                             │
-│  全程 0 网络请求 · 数据不出内存                │
-└─────────────────────────────────────────────┘
-        ┌────────────┐     ┌────────────┐
-        │  没有服务器  │     │  没有数据库  │
-        └────────────┘     └────────────┘`}
-            </pre>
+          <div className="mb-8 overflow-hidden rounded-xl border border-white/[0.08] bg-black/40">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/tradetax.webp"
+              alt="TradeTax 隐私架构: 账单文件在浏览器本地解析与计算, 全程零网络请求, 无服务器无数据库"
+              width={1440}
+              height={810}
+              className="h-auto w-full"
+            />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
