@@ -23,9 +23,11 @@ import type {
   DividendRecord,
   DividendTaxResult,
   HoldingSnapshot,
+  InterestRecord,
   InterestTaxResult,
   Money,
   ParsedStatement,
+  RealizedGain,
   TaxResult,
   TaxSummary,
   Trade,
@@ -494,8 +496,10 @@ function matchGroupWAC(
 function calcCapitalGains(
   trades: Trade[],
   holdings: HoldingSnapshot[],
+  realizedGains: RealizedGain[],
   year: number,
   method: CostBasisMethod,
+  precomputed: boolean,
 ): CapitalGainsResult {
   const startHoldings = holdings.filter((h) => h.periodType === "期初");
   const sorted = [...trades].sort((a, b) => a.tradeTime.localeCompare(b.tradeTime));
@@ -537,6 +541,14 @@ function calcCapitalGains(
     }
   }
 
+  // 券商预计算的已实现盈亏 (老虎税表汇总口径) 直接计入
+  for (const rg of realizedGains) {
+    totalGainCNY += convertToCNY(rg.amount, rg.currency, year);
+    if (!byCurrencyMap.has(rg.currency)) byCurrencyMap.set(rg.currency, { gain: 0, gainCNY: 0 });
+    byCurrencyMap.get(rg.currency)!.gain += rg.amount;
+    byCurrencyMap.get(rg.currency)!.gainCNY += convertToCNY(rg.amount, rg.currency, year);
+  }
+
   const byCurrency: CurrencyGainSummary[] = Array.from(byCurrencyMap.entries()).map(
     ([currency, { gain, gainCNY }]) => ({ currency, totalGain: gain, totalGainCNY: gainCNY }),
   );
@@ -550,6 +562,7 @@ function calcCapitalGains(
     details,
     unmatchedSellsQty: unmatchedQtyTotal,
     unmatchedSellsCount: unmatchedCountTotal,
+    precomputed,
   };
 }
 
@@ -577,8 +590,27 @@ function calcDividendTax(dividends: DividendRecord[], year: number): DividendTax
   };
 }
 
-function calcInterestTax(): InterestTaxResult {
-  return { totalInterestCNY: 0, taxAmountCNY: 0 };
+/** 利息税: 20% 税率, 境外预扣税限额内抵免 */
+function calcInterestTax(interests: InterestRecord[], year: number): InterestTaxResult {
+  let totalInterestCNY = 0;
+  let totalWithholdingCNY = 0;
+
+  for (const int of interests) {
+    totalInterestCNY += convertToCNY(int.amount, int.currency, year);
+    totalWithholdingCNY += convertToCNY(int.withholdingTax, int.currency, year);
+  }
+
+  const grossTax = totalInterestCNY * TAX_RATE;
+  const taxCredit = Math.min(totalWithholdingCNY, grossTax);
+  const netTaxDue = Math.max(0, grossTax - taxCredit);
+
+  return {
+    totalInterestCNY,
+    foreignTaxPaidCNY: totalWithholdingCNY,
+    grossTaxCNY: grossTax,
+    taxCreditCNY: taxCredit,
+    netTaxDueCNY: netTaxDue,
+  };
 }
 
 function calcSummary(
@@ -586,8 +618,9 @@ function calcSummary(
   dividendTax: DividendTaxResult,
   interestTax: InterestTaxResult,
 ): TaxSummary {
-  const totalTaxDue = capitalGains.taxAmountCNY + dividendTax.grossTaxCNY + interestTax.taxAmountCNY;
-  const totalCredit = dividendTax.taxCreditCNY;
+  const totalTaxDue =
+    capitalGains.taxAmountCNY + dividendTax.grossTaxCNY + interestTax.grossTaxCNY;
+  const totalCredit = dividendTax.taxCreditCNY + interestTax.taxCreditCNY;
   return {
     totalTaxDueCNY: totalTaxDue,
     totalTaxCreditCNY: totalCredit,
@@ -637,20 +670,35 @@ export function calculateTaxForYear(
   const allTrades: Trade[] = [];
   const allDividends: DividendRecord[] = [];
   const allHoldings: HoldingSnapshot[] = [];
+  const allRealizedGains: RealizedGain[] = [];
+  const allInterests: InterestRecord[] = [];
+  let reportNote: string | undefined;
 
   for (const stmt of statements) {
     allTrades.push(...stmt.trades);
     allDividends.push(...stmt.dividends);
     allHoldings.push(...stmt.holdings);
+    if (stmt.realizedGains) allRealizedGains.push(...stmt.realizedGains);
+    if (stmt.interests) allInterests.push(...stmt.interests);
+    if (stmt.reportNote) reportNote = stmt.reportNote;
   }
 
-  const yearDividends = allDividends.filter((d) => yearOf(d.date) === year);
+  const precomputed = allRealizedGains.length > 0;
+
+  const yearDividends = allDividends.filter((d) => yearOf(d.date) === year || d.date === "");
   const yearTrades = allTrades.filter((t) => yearOf(t.tradeTime) === year);
   const yearHoldings = allHoldings.filter((h) => yearOf(h.date) === year || yearOf(h.date) === 0);
 
-  const capitalGains = calcCapitalGains(allTrades, allHoldings, year, method);
+  const capitalGains = calcCapitalGains(
+    allTrades,
+    allHoldings,
+    allRealizedGains,
+    year,
+    method,
+    precomputed,
+  );
   const dividendTax = calcDividendTax(yearDividends, year);
-  const interestTax = calcInterestTax();
+  const interestTax = calcInterestTax(allInterests, year);
   const summary = calcSummary(capitalGains, dividendTax, interestTax);
   const annualReturn = calcAnnualReturn(yearHoldings, yearTrades, yearDividends, year);
 
@@ -668,6 +716,8 @@ export function calculateTaxForYear(
     interestTax,
     summary,
     annualReturn,
+    precomputedGains: precomputed,
+    reportNote,
     stats: {
       tradeCount: yearTrades.length,
       dividendCount: yearDividends.length,

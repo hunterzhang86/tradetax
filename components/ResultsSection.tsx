@@ -16,7 +16,13 @@ import { Badge, StatCard } from "./ui";
 function GainsTable({ result }: { result: TaxResult }) {
   const details = result.capitalGains.details;
   if (details.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">本年度无已匹配的买卖交易</p>;
+    return (
+      <p className="py-6 text-center text-sm text-muted-foreground">
+        {result.precomputedGains
+          ? "老虎税表为券商汇总口径, 已实现盈亏已由券商按 FIFO 预计算, 无逐笔明细"
+          : "本年度无已匹配的买卖交易"}
+      </p>
+    );
   }
   return (
     <div className="overflow-x-auto">
@@ -117,6 +123,9 @@ function YearCard({ result }: { result: TaxResult }) {
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-xl font-semibold">{result.year} 年度</h3>
         <Badge tone="muted">{result.method}</Badge>
+        {result.precomputedGains && (
+          <Badge tone="purple">券商预计算 (FIFO)</Badge>
+        )}
         <span className="text-xs text-muted-foreground">
           汇率: 1 USD = {(result.exchangeRate.USD / 100).toFixed(4)} CNY · 1 HKD = {(result.exchangeRate.HKD / 100).toFixed(4)} CNY
         </span>
@@ -137,6 +146,10 @@ function YearCard({ result }: { result: TaxResult }) {
           </button>
         </div>
       </div>
+
+      {result.reportNote && (
+        <p className="mt-3 text-xs text-muted-foreground">{result.reportNote}</p>
+      )}
 
       {cg.unmatchedSellsCount > 0 && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-xs text-amber-300">
@@ -163,8 +176,12 @@ function YearCard({ result }: { result: TaxResult }) {
         />
         <StatCard
           label="利息税 (20%)"
-          value={fmtCNY(result.interestTax.taxAmountCNY)}
-          sub="当前版本暂未提取利息"
+          value={fmtCNY(result.interestTax.netTaxDueCNY)}
+          sub={
+            result.interestTax.totalInterestCNY > 0
+              ? `抵免 ${fmtCNY(result.interestTax.taxCreditCNY)}`
+              : "当前账单无利息记录"
+          }
         />
         <StatCard
           label="实际应缴"

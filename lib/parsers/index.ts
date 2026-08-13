@@ -3,9 +3,11 @@
  */
 
 import type { BrokerId, ParsedStatement } from "@/lib/types";
+import * as XLSX from "xlsx";
 import { parseFutuFromBuffer } from "./futu";
 import { parseLongbridgeFromBuffer } from "./longbridge";
 import { parseTigerFromBuffer } from "./tiger";
+import { parseTigerTaxFromBuffer } from "./tigerTax";
 
 export interface BrokerMeta {
   id: BrokerId;
@@ -16,12 +18,26 @@ export interface BrokerMeta {
 
 export const BROKERS: BrokerMeta[] = [
   { id: "futu", name: "富途牛牛 / moomoo", shortName: "富途", fileHint: "年度账单.xlsx" },
-  { id: "tiger", name: "老虎国际", shortName: "老虎", fileHint: "交易明细.csv" },
+  { id: "tiger", name: "老虎国际", shortName: "老虎", fileHint: "交易明细.csv / 税表.xlsx" },
   { id: "longbridge", name: "长桥", shortName: "长桥", fileHint: "交易记录.csv" },
 ];
 
 function isExcel(fileName: string): boolean {
   return /\.(xlsx|xls)$/i.test(fileName);
+}
+
+/** xlsx 文件按工作表名区分券商 (富途年度账单 vs 老虎税表) */
+function sniffExcelBroker(buffer: ArrayBuffer, fileName: string): BrokerId | null {
+  if (/税表|税务|tax/i.test(fileName) && !/年度账单/.test(fileName)) return "tiger";
+  try {
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const sheets = workbook.SheetNames.join(" ");
+    if (/交易流水|持仓总览|账户信息/.test(sheets)) return "futu";
+    if (/税务总览|交易所得及盈亏/.test(sheets)) return "tiger";
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function sniffHeader(buffer: ArrayBuffer): string {
@@ -35,11 +51,13 @@ function sniffHeader(buffer: ArrayBuffer): string {
 
 /**
  * 识别文件所属券商:
- * - xlsx/xls -> 富途 (年度账单)
+ * - xlsx -> 按文件名/工作表名区分富途年度账单与老虎税表
  * - csv -> 按表头关键词区分老虎/长桥
  */
 export function detectBroker(buffer: ArrayBuffer, fileName: string): BrokerId {
-  if (isExcel(fileName)) return "futu";
+  if (isExcel(fileName)) {
+    return sniffExcelBroker(buffer, fileName) ?? "futu";
+  }
 
   const header = sniffHeader(buffer).toUpperCase();
   const isTiger =
@@ -64,6 +82,8 @@ export function parseStatement(buffer: ArrayBuffer, fileName: string): ParsedSta
     case "futu":
       return parseFutuFromBuffer(buffer, fileName);
     case "tiger":
+      // 税表 xlsx 走汇总解析器; Activity Statement CSV 走逐笔解析器
+      if (isExcel(fileName)) return parseTigerTaxFromBuffer(buffer, fileName);
       return parseTigerFromBuffer(buffer, fileName);
     case "longbridge":
       return parseLongbridgeFromBuffer(buffer, fileName);
