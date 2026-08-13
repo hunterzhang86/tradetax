@@ -7,7 +7,9 @@
  * - 利息所得: 20% (当前版本主要处理股票与期权)
  *
  * 成本核算: FIFO (先进先出) / HIFO (最高成本优先), 可切换
- * 跨年持仓: 使用期初持仓市值作为成本基础 (估算, 界面标注)
+ * 持仓模型: 带符号持仓, 支持做多与做空 (期权卖出开仓/买入平仓)
+ * 期权到期: 未平仓期权在到期日按作废处理 (做多损失权利金, 做空获得权利金)
+ * 跨年持仓: 期初持仓市值作为成本基础 (估算, 界面标注)
  */
 
 import { convertToCNY, getExchangeRate } from "@/lib/exchange";
@@ -30,34 +32,51 @@ import type {
 } from "@/lib/types";
 
 const TAX_RATE = 0.2;
+const OPTION_MULTIPLIER = 100;
 
-interface BuyLot {
+/** 期权代码匹配: 前缀(US./HK. 可选) + 标的 + YYMMDD + C/P + 行权价 */
+const OPTION_RE = /^(?:[A-Z]{2}\.)?([A-Z]{1,6})(\d{6})([CP])\d+(?:\.[\d]+)?$/i;
+
+function isOptionSymbol(symbol: string): boolean {
+  return OPTION_RE.test(symbol);
+}
+
+/** 从期权代码解析到期日: "AAPL240119C180000" -> "2024-01-19" (失败返回 null) */
+function optionExpiryDate(symbol: string): string | null {
+  const m = symbol.match(OPTION_RE);
+  if (!m) return null;
+  const yy = m[2].slice(0, 2);
+  const mm = m[2].slice(2, 4);
+  const dd = m[2].slice(4, 6);
+  const year = Number(yy) + (Number(yy) >= 70 ? 1900 : 2000);
+  return `${year}-${mm}-${dd}`;
+}
+
+function yearOf(dateStr: string): number {
+  const y = Number(dateStr.slice(0, 4));
+  return Number.isFinite(y) && y > 0 ? y : 0;
+}
+
+interface BaseLot {
   tradeTime: string;
   symbol: string;
   market?: string;
   category: string;
   currency: Currency;
+  /** 剩余数量 (随匹配减少) */
   quantity: number;
   price: number;
-  /** 成交金额 (含期权乘数) */
-  amount: number;
-  fees: number;
+  /** 单位金额 = 原始成交金额(含乘数) / 原始数量, 匹配时按剩余数量线性折算 */
+  unitAmount: number;
+  /** 单位费用 = 原始费用 / 原始数量 */
+  unitFees: number;
+}
+
+interface LongLot extends BaseLot {
   isEstimatedCost: boolean;
 }
 
-interface SellRecord {
-  tradeTime: string;
-  symbol: string;
-  market?: string;
-  category: string;
-  currency: Currency;
-  quantity: number;
-  price: number;
-  amount: number;
-  fees: number;
-}
-
-const OPTION_MULTIPLIER = 100;
+interface ShortLot extends BaseLot {}
 
 function makeMoney(amount: number, currency: Currency): Money {
   return { amount, currency };
@@ -68,16 +87,94 @@ function groupKey(t: { symbol: string; market?: string; currency: Currency; cate
   return [t.symbol, t.market ?? "", t.currency, t.category].join("|");
 }
 
-/** 构建买入池与卖出序列 (含期初持仓虚拟买入) */
-function buildLots(
+function toDetail(
+  sell: Trade,
+  lot: BaseLot,
+  matchQty: number,
+  targetYear: number,
+  isEstimatedCost: boolean,
+): CapitalGainDetail {
+  const buyAmount = lot.unitAmount * matchQty;
+  const sellAmount = (sell.grossAmount * matchQty) / sell.quantity;
+  const fees = lot.unitFees * matchQty + (sell.fees * matchQty) / sell.quantity;
+  const gain = sellAmount - buyAmount - fees;
+  const gainCNY = convertToCNY(gain, sell.currency, targetYear);
+
+  return {
+    symbol: sell.symbol,
+    market: sell.market,
+    category: sell.category,
+    buyDate: lot.tradeTime.split(" ")[0],
+    sellDate: sell.tradeTime.split(" ")[0],
+    quantity: matchQty,
+    multiplier: isOptionSymbol(sell.symbol) ? OPTION_MULTIPLIER : 1,
+    buyPrice: lot.price,
+    sellPrice: sell.price,
+    buyAmount: makeMoney(buyAmount, sell.currency),
+    sellAmount: makeMoney(sellAmount, sell.currency),
+    fees: makeMoney(fees, sell.currency),
+    gain: makeMoney(gain, sell.currency),
+    gainCNY: makeMoney(gainCNY, "CNY"),
+    isEstimatedCost,
+  };
+}
+
+/** 期权到期作废: 未平仓期权在到期日实现 */
+function toExpiryDetail(
+  lot: BaseLot,
+  expiry: string,
+  isLong: boolean,
+  targetYear: number,
+): CapitalGainDetail | null {
+  if (yearOf(expiry) !== targetYear) return null;
+  const amount = lot.unitAmount * lot.quantity;
+  const fees = lot.unitFees * lot.quantity;
+  const sellAmount = isLong ? 0 : amount;
+  const buyAmount = isLong ? amount : 0;
+  const gain = sellAmount - buyAmount - fees;
+  const gainCNY = convertToCNY(gain, lot.currency, targetYear);
+
+  return {
+    symbol: lot.symbol,
+    market: lot.market,
+    category: lot.category,
+    buyDate: lot.tradeTime.split(" ")[0],
+    sellDate: expiry,
+    quantity: lot.quantity,
+    multiplier: OPTION_MULTIPLIER,
+    buyPrice: isLong ? lot.price : 0,
+    sellPrice: isLong ? 0 : lot.price,
+    buyAmount: makeMoney(buyAmount, lot.currency),
+    sellAmount: makeMoney(sellAmount, lot.currency),
+    fees: makeMoney(fees, lot.currency),
+    gain: makeMoney(gain, lot.currency),
+    gainCNY: makeMoney(gainCNY, "CNY"),
+    isEstimatedCost: false,
+  };
+}
+
+/**
+ * 单组交易匹配 (带符号持仓模型)
+ *
+ * - 买入: 先平空头 (FIFO), 剩余建立多头
+ * - 卖出: 先平多头 (FIFO/HIFO), 剩余建立空头
+ * - 非期权标的卖出无买入 -> 计入未匹配告警 (疑似数据缺失)
+ * - 仅期权持仓在到期日实现盈亏
+ */
+function matchGroup(
   trades: Trade[],
   startHolding: HoldingSnapshot | null,
-): { buys: BuyLot[]; sells: SellRecord[] } {
-  const buys: BuyLot[] = [];
-  const sells: SellRecord[] = [];
+  method: CostBasisMethod,
+  targetYear: number,
+): { details: CapitalGainDetail[]; unmatchedQty: number; unmatchedCount: number } {
+  const details: CapitalGainDetail[] = [];
+  let unmatchedQty = 0;
+  let unmatchedCount = 0;
+  const longs: LongLot[] = [];
+  const shorts: ShortLot[] = [];
 
   if (startHolding && startHolding.quantity > 0) {
-    buys.push({
+    longs.push({
       tradeTime: `${startHolding.date} 00:00:00`,
       symbol: startHolding.symbol,
       market: startHolding.market,
@@ -85,129 +182,315 @@ function buildLots(
       currency: startHolding.currency,
       quantity: startHolding.quantity,
       price: startHolding.price,
-      amount: startHolding.marketValue,
-      fees: 0,
+      unitAmount: startHolding.marketValue / startHolding.quantity,
+      unitFees: 0,
       isEstimatedCost: true,
     });
   }
 
-  for (const tx of trades) {
-    const amount = Math.abs(tx.grossAmount);
-    if (tx.direction === "BUY") {
-      buys.push({
-        tradeTime: tx.tradeTime,
-        symbol: tx.symbol,
-        market: tx.market,
-        category: tx.category,
-        currency: tx.currency,
-        quantity: tx.quantity,
-        price: tx.price,
-        amount,
-        fees: tx.fees,
-        isEstimatedCost: false,
-      });
-    } else {
-      sells.push({
-        tradeTime: tx.tradeTime,
-        symbol: tx.symbol,
-        market: tx.market,
-        category: tx.category,
-        currency: tx.currency,
-        quantity: tx.quantity,
-        price: tx.price,
-        amount,
-        fees: tx.fees,
+  for (const trade of trades) {
+    const option = isOptionSymbol(trade.symbol);
+
+    if (trade.direction === "BUY") {
+      let q = trade.quantity;
+      while (q > 0 && shorts.length > 0) {
+        const lot = shorts[0];
+        const m = Math.min(q, lot.quantity);
+        const closeAmount = (trade.grossAmount * m) / trade.quantity;
+        const openAmount = lot.unitAmount * m;
+        const fees = lot.unitFees * m + (trade.fees * m) / trade.quantity;
+        const gain = openAmount - closeAmount - fees;
+        const gainCNY = convertToCNY(gain, trade.currency, targetYear);
+
+        if (yearOf(trade.tradeTime) === targetYear) {
+          details.push({
+            symbol: trade.symbol,
+            market: trade.market,
+            category: trade.category,
+            buyDate: lot.tradeTime.split(" ")[0],
+            sellDate: trade.tradeTime.split(" ")[0],
+            quantity: m,
+            multiplier: option ? OPTION_MULTIPLIER : 1,
+            buyPrice: lot.price,
+            sellPrice: trade.price,
+            buyAmount: makeMoney(openAmount, trade.currency),
+            sellAmount: makeMoney(closeAmount, trade.currency),
+            fees: makeMoney(fees, trade.currency),
+            gain: makeMoney(gain, trade.currency),
+            gainCNY: makeMoney(gainCNY, "CNY"),
+            isEstimatedCost: false,
+          });
+        }
+
+        lot.quantity -= m;
+        q -= m;
+        if (lot.quantity <= 0) shorts.shift();
+      }
+
+      if (q > 0) {
+        longs.push({
+          tradeTime: trade.tradeTime,
+          symbol: trade.symbol,
+          market: trade.market,
+          category: trade.category,
+          currency: trade.currency,
+          quantity: q,
+          price: trade.price,
+          unitAmount: trade.grossAmount / trade.quantity,
+          unitFees: trade.fees / trade.quantity,
+          isEstimatedCost: false,
+        });
+      }
+      continue;
+    }
+
+    // SELL
+    let q = trade.quantity;
+    while (q > 0 && longs.length > 0) {
+      const lot = method === "HIFO"
+        ? longs.reduce((best, l) =>
+            l.quantity > 0 && (l.price > best.price || (l.price === best.price && l.tradeTime < best.tradeTime)) ? l : best,
+          longs[0],
+        )
+        : longs[0];
+
+      const m = Math.min(q, lot.quantity);
+      const sellAmount = (trade.grossAmount * m) / trade.quantity;
+      const buyAmount = lot.unitAmount * m;
+      const fees = lot.unitFees * m + (trade.fees * m) / trade.quantity;
+      const gain = sellAmount - buyAmount - fees;
+      const gainCNY = convertToCNY(gain, trade.currency, targetYear);
+
+      if (yearOf(trade.tradeTime) === targetYear) {
+        details.push({
+          symbol: trade.symbol,
+          market: trade.market,
+          category: trade.category,
+          buyDate: lot.tradeTime.split(" ")[0],
+          sellDate: trade.tradeTime.split(" ")[0],
+          quantity: m,
+          multiplier: option ? OPTION_MULTIPLIER : 1,
+          buyPrice: lot.price,
+          sellPrice: trade.price,
+          buyAmount: makeMoney(buyAmount, trade.currency),
+          sellAmount: makeMoney(sellAmount, trade.currency),
+          fees: makeMoney(fees, trade.currency),
+          gain: makeMoney(gain, trade.currency),
+          gainCNY: makeMoney(gainCNY, "CNY"),
+          isEstimatedCost: lot.isEstimatedCost,
+        });
+      }
+
+      lot.quantity -= m;
+      q -= m;
+      if (lot.quantity <= 0) {
+        const idx = longs.indexOf(lot);
+        longs.splice(idx, 1);
+      }
+    }
+
+    if (q > 0) {
+      if (!option) {
+        unmatchedQty += q;
+        unmatchedCount++;
+      }
+      shorts.push({
+        tradeTime: trade.tradeTime,
+        symbol: trade.symbol,
+        market: trade.market,
+        category: trade.category,
+        currency: trade.currency,
+        quantity: q,
+        price: trade.price,
+        unitAmount: trade.grossAmount / trade.quantity,
+        unitFees: trade.fees / trade.quantity,
       });
     }
   }
 
-  buys.sort((a, b) => a.tradeTime.localeCompare(b.tradeTime));
-  sells.sort((a, b) => a.tradeTime.localeCompare(b.tradeTime));
-  return { buys, sells };
-}
-
-/**
- * 逐笔卖出匹配买入成本 (FIFO: 最早买入先出; HIFO: 成本最高先出, 同价按时间)
- * 返回 [匹配明细, 无法匹配的卖出数量]
- */
-function matchCosts(
-  buys: BuyLot[],
-  sells: SellRecord[],
-  method: CostBasisMethod,
-  year: number,
-): { details: CapitalGainDetail[]; unmatchedQty: number; unmatchedCount: number } {
-  const details: CapitalGainDetail[] = [];
-  let unmatchedQty = 0;
-  let unmatchedCount = 0;
-
-  // 卖出按时间处理, 买入池按需增长 (只使用卖出时刻之前已发生的买入)
-  let buyIdx = 0;
-  const pool: BuyLot[] = [];
-
-  for (const sell of sells) {
-    // 将 sell 时刻之前的买入加入池
-    while (buyIdx < buys.length && buys[buyIdx].tradeTime <= sell.tradeTime) {
-      pool.push(buys[buyIdx]);
-      buyIdx++;
+  // 期权到期作废: 未平仓期权在到期日实现盈亏
+  for (const lot of longs) {
+    const expiry = optionExpiryDate(lot.symbol);
+    if (expiry) {
+      const detail = toExpiryDetail(lot, expiry, true, targetYear);
+      if (detail) details.push(detail);
     }
-
-    let remaining = sell.quantity;
-    const poolRemaining = pool.filter((b) => b.quantity > 0);
-
-    if (poolRemaining.length === 0) {
-      unmatchedQty += remaining;
-      unmatchedCount++;
-      continue;
-    }
-
-    // 按成本方法排序可用买入
-    const ordered = method === "HIFO"
-      ? [...poolRemaining].sort((a, b) => b.price - a.price || a.tradeTime.localeCompare(b.tradeTime))
-      : [...poolRemaining].sort((a, b) => a.tradeTime.localeCompare(b.tradeTime));
-
-    for (const lot of ordered) {
-      if (remaining <= 0) break;
-      const matchQty = Math.min(remaining, lot.quantity);
-      if (matchQty <= 0) continue;
-
-      const buyAmount = (lot.amount * matchQty) / lot.quantity;
-      const sellAmount = (sell.amount * matchQty) / sell.quantity;
-      const fees = (lot.fees * matchQty) / lot.quantity + (sell.fees * matchQty) / sell.quantity;
-      const gain = sellAmount - buyAmount - fees;
-      const gainCNY = convertToCNY(gain, sell.currency, year);
-
-      details.push({
-        symbol: sell.symbol,
-        market: sell.market,
-        category: sell.category,
-        buyDate: lot.tradeTime.split(" ")[0],
-        sellDate: sell.tradeTime.split(" ")[0],
-        quantity: matchQty,
-        multiplier: sell.category === "期权" ? OPTION_MULTIPLIER : 1,
-        buyPrice: lot.price,
-        sellPrice: sell.price,
-        buyAmount: makeMoney(buyAmount, sell.currency),
-        sellAmount: makeMoney(sellAmount, sell.currency),
-        fees: makeMoney(fees, sell.currency),
-        gain: makeMoney(gain, sell.currency),
-        gainCNY: makeMoney(gainCNY, "CNY"),
-        isEstimatedCost: lot.isEstimatedCost,
-      });
-
-      lot.quantity -= matchQty;
-      remaining -= matchQty;
-    }
-
-    if (remaining > 0) {
-      unmatchedQty += remaining;
-      unmatchedCount++;
+  }
+  for (const lot of shorts) {
+    const expiry = optionExpiryDate(lot.symbol);
+    if (expiry) {
+      const detail = toExpiryDetail(lot, expiry, false, targetYear);
+      if (detail) details.push(detail);
     }
   }
 
   return { details, unmatchedQty, unmatchedCount };
 }
 
-/** 资本利得税 */
+/**
+ * 移动加权平均成本法 (WAC)
+ *
+ * 每次买入后按总成本(含费用)/总数量重算单位成本, 卖出按当前加权平均成本核算。
+ * 富途官方账单即采用该方法; 做空期权按权利金净额(扣除开仓费用)加权。
+ */
+function matchGroupWAC(
+  trades: Trade[],
+  startHolding: HoldingSnapshot | null,
+  targetYear: number,
+): { details: CapitalGainDetail[]; unmatchedQty: number; unmatchedCount: number } {
+  const details: CapitalGainDetail[] = [];
+  let unmatchedQty = 0;
+  let unmatchedCount = 0;
+
+  let longQty = 0;
+  let longAvg = 0;
+  let shortQty = 0;
+  let shortAvg = 0;
+  let lastBuyTime = "";
+
+  const multOf = (symbol: string) => (isOptionSymbol(symbol) ? OPTION_MULTIPLIER : 1);
+
+  if (startHolding && startHolding.quantity > 0) {
+    longQty = startHolding.quantity;
+    longAvg = startHolding.marketValue / (startHolding.quantity * multOf(startHolding.symbol));
+    lastBuyTime = `${startHolding.date} 00:00:00`;
+  }
+
+  const emit = (input: {
+    sell: Trade;
+    qty: number;
+    avg: number;
+    isShort: boolean;
+    sellAmount: number;
+    sellFees: number;
+    estCost: boolean;
+  }) => {
+    const mult = multOf(input.sell.symbol);
+    const gain = (input.isShort ? input.avg - input.sell.price : input.sell.price - input.avg) * input.qty * mult - input.sellFees;
+    const gainCNY = convertToCNY(gain, input.sell.currency, targetYear);
+    if (yearOf(input.sell.tradeTime) !== targetYear) return;
+    details.push({
+      symbol: input.sell.symbol,
+      market: input.sell.market,
+      category: input.sell.category,
+      buyDate: lastBuyTime ? lastBuyTime.split(" ")[0] : input.sell.tradeTime.split(" ")[0],
+      sellDate: input.sell.tradeTime.split(" ")[0],
+      quantity: input.qty,
+      multiplier: mult,
+      buyPrice: input.avg,
+      sellPrice: input.sell.price,
+      buyAmount: makeMoney(input.avg * input.qty * mult, input.sell.currency),
+      sellAmount: makeMoney(input.sellAmount, input.sell.currency),
+      fees: makeMoney(input.sellFees, input.sell.currency),
+      gain: makeMoney(gain, input.sell.currency),
+      gainCNY: makeMoney(gainCNY, "CNY"),
+      isEstimatedCost: input.estCost,
+    });
+  };
+
+  for (const trade of trades) {
+    const mult = multOf(trade.symbol);
+
+    if (trade.direction === "BUY") {
+      let q = trade.quantity;
+      // 先平空头
+      while (q > 0 && shortQty > 0) {
+        const m = Math.min(q, shortQty);
+        const closeAmount = (trade.grossAmount * m) / trade.quantity;
+        const closeFees = (trade.fees * m) / trade.quantity;
+        emit({ sell: trade, qty: m, avg: shortAvg, isShort: true, sellAmount: closeAmount, sellFees: closeFees, estCost: false });
+        shortQty -= m;
+        q -= m;
+      }
+      if (shortQty === 0) shortAvg = 0;
+
+      if (q > 0) {
+        const addedAmount = (trade.grossAmount * q) / trade.quantity;
+        const addedFees = (trade.fees * q) / trade.quantity;
+        const totalQty = longQty + q;
+        longAvg = (longAvg * longQty + (addedAmount + addedFees) / mult) / totalQty;
+        longQty = totalQty;
+        lastBuyTime = trade.tradeTime;
+      }
+      continue;
+    }
+
+    let q = trade.quantity;
+    while (q > 0 && longQty > 0) {
+      const m = Math.min(q, longQty);
+      const sellAmount = (trade.grossAmount * m) / trade.quantity;
+      const sellFees = (trade.fees * m) / trade.quantity;
+      emit({ sell: trade, qty: m, avg: longAvg, isShort: false, sellAmount, sellFees, estCost: false });
+      longQty -= m;
+      q -= m;
+    }
+    if (longQty === 0) longAvg = 0;
+
+    if (q > 0) {
+      if (!isOptionSymbol(trade.symbol)) {
+        unmatchedQty += q;
+        unmatchedCount++;
+      }
+      const addedAmount = (trade.grossAmount * q) / trade.quantity;
+      const addedFees = (trade.fees * q) / trade.quantity;
+      const totalQty = shortQty + q;
+      shortAvg = (shortAvg * shortQty + (addedAmount - addedFees) / mult) / totalQty;
+      shortQty = totalQty;
+    }
+  }
+
+  // 期权到期作废
+  if (longQty > 0 && longAvg > 0) {
+    const symbol = trades[0]?.symbol ?? "";
+    const expiry = optionExpiryDate(symbol);
+    if (expiry && yearOf(expiry) === targetYear) {
+      details.push({
+        symbol,
+        market: trades[0]?.market,
+        category: trades[0]?.category ?? "期权",
+        buyDate: lastBuyTime ? lastBuyTime.split(" ")[0] : "",
+        sellDate: expiry,
+        quantity: longQty,
+        multiplier: OPTION_MULTIPLIER,
+        buyPrice: longAvg,
+        sellPrice: 0,
+        buyAmount: makeMoney(longAvg * longQty * OPTION_MULTIPLIER, trades[0]!.currency),
+        sellAmount: makeMoney(0, trades[0]!.currency),
+        fees: makeMoney(0, trades[0]!.currency),
+        gain: makeMoney(-longAvg * longQty * OPTION_MULTIPLIER, trades[0]!.currency),
+        gainCNY: makeMoney(convertToCNY(-longAvg * longQty * OPTION_MULTIPLIER, trades[0]!.currency, targetYear), "CNY"),
+        isEstimatedCost: false,
+      });
+    }
+  }
+  if (shortQty > 0 && shortAvg > 0) {
+    const symbol = trades[0]?.symbol ?? "";
+    const expiry = optionExpiryDate(symbol);
+    if (expiry && yearOf(expiry) === targetYear) {
+      details.push({
+        symbol,
+        market: trades[0]?.market,
+        category: trades[0]?.category ?? "期权",
+        buyDate: lastBuyTime ? lastBuyTime.split(" ")[0] : "",
+        sellDate: expiry,
+        quantity: shortQty,
+        multiplier: OPTION_MULTIPLIER,
+        buyPrice: 0,
+        sellPrice: shortAvg,
+        buyAmount: makeMoney(0, trades[0]!.currency),
+        sellAmount: makeMoney(shortAvg * shortQty * OPTION_MULTIPLIER, trades[0]!.currency),
+        fees: makeMoney(0, trades[0]!.currency),
+        gain: makeMoney(shortAvg * shortQty * OPTION_MULTIPLIER, trades[0]!.currency),
+        gainCNY: makeMoney(convertToCNY(shortAvg * shortQty * OPTION_MULTIPLIER, trades[0]!.currency, targetYear), "CNY"),
+        isEstimatedCost: false,
+      });
+    }
+  }
+
+  return { details, unmatchedQty, unmatchedCount };
+}
+
+/** 资本利得税: 只计算目标年度内实现的盈亏 (跨年买入提供成本基础) */
 function calcCapitalGains(
   trades: Trade[],
   holdings: HoldingSnapshot[],
@@ -215,10 +498,10 @@ function calcCapitalGains(
   method: CostBasisMethod,
 ): CapitalGainsResult {
   const startHoldings = holdings.filter((h) => h.periodType === "期初");
+  const sorted = [...trades].sort((a, b) => a.tradeTime.localeCompare(b.tradeTime));
 
-  // 分组计算
   const groups = new Map<string, { trades: Trade[]; holding: HoldingSnapshot | null }>();
-  for (const tx of trades) {
+  for (const tx of sorted) {
     const key = groupKey(tx);
     if (!groups.has(key)) groups.set(key, { trades: [], holding: null });
     groups.get(key)!.trades.push(tx);
@@ -236,8 +519,11 @@ function calcCapitalGains(
   const details: CapitalGainDetail[] = [];
 
   for (const group of groups.values()) {
-    const { buys, sells } = buildLots(group.trades, group.holding);
-    const { details: groupDetails, unmatchedQty, unmatchedCount } = matchCosts(buys, sells, method, year);
+    const groupResult =
+      method === "WAC"
+        ? matchGroupWAC(group.trades, group.holding, year)
+        : matchGroup(group.trades, group.holding, method, year);
+    const { details: groupDetails, unmatchedQty, unmatchedCount } = groupResult;
     unmatchedQtyTotal += unmatchedQty;
     unmatchedCountTotal += unmatchedCount;
 
@@ -291,7 +577,6 @@ function calcDividendTax(dividends: DividendRecord[], year: number): DividendTax
   };
 }
 
-/** 利息税 (当前版本暂未从账单提取利息记录) */
 function calcInterestTax(): InterestTaxResult {
   return { totalInterestCNY: 0, taxAmountCNY: 0 };
 }
@@ -340,16 +625,14 @@ function calcAnnualReturn(
   };
 }
 
-/** 计算单个年度的税务结果 */
+/** 计算单个年度的税务结果 (只包含该年度实现的事件) */
 export function calculateTaxForYear(
   year: number,
   statements: ParsedStatement[],
   method: CostBasisMethod = "FIFO",
 ): TaxResult | null {
   const exchangeRate = getExchangeRate(year);
-  if (!exchangeRate) {
-    return null;
-  }
+  if (!exchangeRate) return null;
 
   const allTrades: Trade[] = [];
   const allDividends: DividendRecord[] = [];
@@ -361,11 +644,15 @@ export function calculateTaxForYear(
     allHoldings.push(...stmt.holdings);
   }
 
+  const yearDividends = allDividends.filter((d) => yearOf(d.date) === year);
+  const yearTrades = allTrades.filter((t) => yearOf(t.tradeTime) === year);
+  const yearHoldings = allHoldings.filter((h) => yearOf(h.date) === year || yearOf(h.date) === 0);
+
   const capitalGains = calcCapitalGains(allTrades, allHoldings, year, method);
-  const dividendTax = calcDividendTax(allDividends, year);
+  const dividendTax = calcDividendTax(yearDividends, year);
   const interestTax = calcInterestTax();
   const summary = calcSummary(capitalGains, dividendTax, interestTax);
-  const annualReturn = calcAnnualReturn(allHoldings, allTrades, allDividends, year);
+  const annualReturn = calcAnnualReturn(yearHoldings, yearTrades, yearDividends, year);
 
   return {
     year,
@@ -382,8 +669,8 @@ export function calculateTaxForYear(
     summary,
     annualReturn,
     stats: {
-      tradeCount: allTrades.length,
-      dividendCount: allDividends.length,
+      tradeCount: yearTrades.length,
+      dividendCount: yearDividends.length,
       warningCount: statements.reduce((sum, s) => sum + s.warnings.length, 0),
     },
   };
@@ -399,11 +686,11 @@ export function calculateTax(
     const stmtYear = stmt.year;
     if (stmtYear) years.add(stmtYear);
     for (const tx of stmt.trades) {
-      const y = Number(tx.tradeTime.slice(0, 4));
+      const y = yearOf(tx.tradeTime);
       if (y > 0) years.add(y);
     }
     for (const div of stmt.dividends) {
-      const y = Number(div.date.slice(0, 4));
+      const y = yearOf(div.date);
       if (y > 0) years.add(y);
     }
   }

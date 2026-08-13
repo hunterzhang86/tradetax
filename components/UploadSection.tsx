@@ -159,7 +159,7 @@ export function UploadSection({
         <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-white/[0.06] pt-6">
           <span className="text-xs text-muted-foreground">成本核算方法:</span>
           <div className="flex rounded-lg border border-white/10 p-0.5">
-            {(["FIFO", "HIFO"] as CostBasisMethod[]).map((m) => (
+            {(["FIFO", "HIFO", "WAC"] as CostBasisMethod[]).map((m) => (
               <button
                 key={m}
                 onClick={() => onMethodChange(m)}
@@ -175,7 +175,9 @@ export function UploadSection({
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            {method === "FIFO" ? "先进先出 — 先买入的先卖出, 最常用" : "最高成本优先 — 先卖出成本最高的持仓"}
+            {method === "FIFO" && "先进先出 — 先买入的先卖出, 最常用"}
+            {method === "HIFO" && "最高成本优先 — 先卖出成本最高的持仓"}
+            {method === "WAC" && "移动加权平均 — 每次买入后按总成本重算均价, 富途官方口径"}
           </p>
         </div>
 

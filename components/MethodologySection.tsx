@@ -18,6 +18,11 @@ const COST_METHODS = [
     title: "最高成本优先",
     desc: "优先卖出成本最高的持仓, 在盈利年份可最大化抵减应税所得。",
   },
+  {
+    name: "WAC",
+    title: "移动加权平均",
+    desc: "每次买入后按总成本(含费用)除以总数量重算均价, 富途官方账单采用的口径。",
+  },
 ];
 
 export function MethodologySection() {

@@ -11,7 +11,7 @@ export type BrokerId = "futu" | "tiger" | "longbridge";
 
 export type TradeDirection = "BUY" | "SELL";
 
-export type CostBasisMethod = "FIFO" | "HIFO";
+export type CostBasisMethod = "FIFO" | "HIFO" | "WAC";
 
 export interface Money {
   amount: number;
