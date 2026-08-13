@@ -58,6 +58,23 @@ export interface DividendRecord {
   sourceRow: number;
 }
 
+/** 利息记录 (老虎税表提供) */
+export interface InterestRecord {
+  date: string;
+  currency: Currency;
+  amount: number;
+  /** 境外预扣税 */
+  withholdingTax: number;
+  sourceRow: number;
+}
+
+/** 券商预计算的已实现盈亏 (老虎税表口径: 无逐笔交易, 按币种汇总) */
+export interface RealizedGain {
+  currency: Currency;
+  amount: number;
+  sourceRow: number;
+}
+
 /** 期初/期末持仓快照 (用于跨年持仓成本估算) */
 export interface HoldingSnapshot {
   periodType: "期初" | "期末";
@@ -89,6 +106,12 @@ export interface ParsedStatement {
   dividends: DividendRecord[];
   holdings: HoldingSnapshot[];
   warnings: ParseWarning[];
+  /** 券商预计算的已实现盈亏 (如老虎税表, 无逐笔交易数据) */
+  realizedGains?: RealizedGain[];
+  /** 利息记录 (老虎税表提供) */
+  interests?: InterestRecord[];
+  /** 报表说明 (如老虎税表的报告范围/成本法) */
+  reportNote?: string;
 }
 
 // ================= 税务计算结果 =================
@@ -133,6 +156,8 @@ export interface CapitalGainsResult {
   /** 无法匹配到买入成本的卖出数量 (缺少成本基础) */
   unmatchedSellsQty: number;
   unmatchedSellsCount: number;
+  /** 盈亏是否来自券商预计算 (老虎税表汇总口径, 无逐笔明细) */
+  precomputed?: boolean;
 }
 
 export interface DividendTaxResult {
@@ -149,7 +174,14 @@ export interface DividendTaxResult {
 
 export interface InterestTaxResult {
   totalInterestCNY: number;
-  taxAmountCNY: number;
+  /** 境外预扣税 (人民币) */
+  foreignTaxPaidCNY: number;
+  /** 毛应纳税额 = totalInterest * 20% */
+  grossTaxCNY: number;
+  /** 可抵免税额 = min(境外预扣税, 毛应纳税额) */
+  taxCreditCNY: number;
+  /** 实际应补税额 = max(0, gross - credit) */
+  netTaxDueCNY: number;
 }
 
 export interface TaxSummary {
@@ -184,6 +216,9 @@ export interface TaxResult {
   interestTax: InterestTaxResult;
   summary: TaxSummary;
   annualReturn?: AnnualReturn;
+  /** 是否使用券商预计算的已实现盈亏 (老虎税表汇总口径, 无逐笔明细) */
+  precomputedGains: boolean;
+  reportNote?: string;
   /** 用于复核: 导入的交易/股息/持仓条数 */
   stats: {
     tradeCount: number;
