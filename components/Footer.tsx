@@ -1,4 +1,4 @@
-import { Github } from "lucide-react";
+import { ExternalLink, Github } from "lucide-react";
 
 export function Footer() {
   return (
@@ -22,6 +22,16 @@ export function Footer() {
             className="text-muted-foreground transition hover:text-foreground"
           >
             计算方式
+          </a>
+          <a
+            href="https://www.myaiexp.com/zh"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-muted-foreground transition hover:border-cyan-400/40 hover:text-cyan-300"
+          >
+            AI 工具导航
+            <ExternalLink className="h-3 w-3" />
+            <span className="font-mono text-cyan-300">myaiexp.com</span>
           </a>
           <a
             href="https://github.com/hunterzhang86/tradetax"
