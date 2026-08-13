@@ -26,6 +26,13 @@ export const metadata: Metadata = {
     title: "TradeTax · 港美股投资个税计算器",
     description: "富途/老虎/长桥交易账单 → 本地计算个税, 数据不出浏览器。",
     type: "website",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "TradeTax 港美股投资个税计算器" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TradeTax · 港美股投资个税计算器",
+    description: "富途/老虎/长桥交易账单 → 本地计算个税, 数据不出浏览器。",
+    images: ["/og.png"],
   },
 };
 
