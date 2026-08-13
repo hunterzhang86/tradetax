@@ -18,8 +18,8 @@ const FEATURES = [
   },
   {
     icon: Cpu,
-    title: "无账号 · 无追踪",
-    desc: "不设账号体系, 不埋点, 不采集任何访问与使用数据。",
+    title: "无账号 · 无账单数据采集",
+    desc: "不设账号体系, 不采集账单文件中的任何内容。站点访问统计 (Google Analytics) 仅记录页面浏览等聚合数据, 与你的账单完全无关。",
   },
 ];
 
@@ -35,7 +35,8 @@ export function PrivacySection() {
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground md:text-base">
               交易账单包含账户号、持仓与盈亏数据, 敏感程度高。因此 TradeTax 采用"纯前端"架构:
-              解析、成本核算、税务计算全部在你的设备上完成, 整个过程中不产生任何网络请求。
+              解析、成本核算、税务计算全部在你的设备上完成, 计算过程中不产生任何网络请求,
+              账单数据不会离开你的设备。
             </p>
           </div>
 

@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import Script from "next/script";
+import { GoogleAnalytics } from "@next/third-parties/google";
 import { Inter } from "next/font/google";
 import "./globals.css";
 
@@ -36,6 +38,8 @@ export const metadata: Metadata = {
   },
 };
 
+const adsenseClientId = process.env.GOOGLE_ADSENSE_CLIENT_ID;
+
 export default function RootLayout({
   children,
 }: {
@@ -43,9 +47,28 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN" className="dark">
+      <head>
+        {adsenseClientId && (
+          <>
+            <link rel="dns-prefetch" href="https://pagead2.googlesyndication.com" />
+            <link rel="preconnect" href="https://pagead2.googlesyndication.com" crossOrigin="anonymous" />
+          </>
+        )}
+      </head>
       <body className={`${inter.variable} font-sans min-h-screen`}>
         {children}
+        {adsenseClientId && (
+          <Script
+            async
+            strategy="afterInteractive"
+            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${adsenseClientId}`}
+            crossOrigin="anonymous"
+          />
+        )}
       </body>
+      {process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS && (
+        <GoogleAnalytics gaId={process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS} />
+      )}
     </html>
   );
 }

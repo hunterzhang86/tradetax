@@ -57,10 +57,10 @@ export function Hero() {
         <div className="mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <Lock className="h-3.5 w-3.5 text-emerald-400" />
-            无账号 · 无上传 · 无追踪
+            无账号 · 无上传 · 账单数据不出设备
           </span>
           <span>税制: 中国大陆税务居民 · 港美股</span>
-          <span>成本法: FIFO / HIFO</span>
+          <span>成本法: FIFO / HIFO / WAC</span>
         </div>
       </div>
     </section>
