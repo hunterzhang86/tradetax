@@ -11,6 +11,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.cntax.net"),
   title: "TradeTax · 港美股投资个税计算器",
   description:
     "上传富途/老虎/长桥交易账单, 本地自动计算资本利得税、股息税与利息税。100% 浏览器本地计算, 数据不出设备。",
@@ -24,10 +25,20 @@ export const metadata: Metadata = {
     "CRS申报",
     "境外收入个税",
   ],
+  alternates: {
+    canonical: "/",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
   openGraph: {
     title: "TradeTax · 港美股投资个税计算器",
     description: "富途/老虎/长桥交易账单 → 本地计算个税, 数据不出浏览器。",
     type: "website",
+    url: "https://www.cntax.net/",
+    siteName: "TradeTax",
+    locale: "zh_CN",
     images: [{ url: "/og.png", width: 1200, height: 630, alt: "TradeTax 港美股投资个税计算器" }],
   },
   twitter: {
